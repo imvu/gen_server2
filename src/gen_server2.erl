@@ -192,7 +192,7 @@
 
 %% State record
 -record(gs2_state, {parent, name, state, mod, time,
-                    timeout_state, queue, debug, prioritise_call,
+                    timeout_state, random_state, queue, debug, prioritise_call,
                     prioritise_cast, prioritise_info}).
 
 %%%=========================================================================
@@ -371,11 +371,10 @@ enter_loop(Mod, Options, State, ServerName, Timeout, Backoff) ->
     Parent = get_parent(),
     Debug = debug_options(Name, Options),
     Queue = priority_queue:new(),
-    Backoff1 = extend_backoff(Backoff),
     loop(find_prioritisers(
            #gs2_state { parent = Parent, name = Name, state = State,
-                        mod = Mod, time = Timeout, timeout_state = Backoff1,
-                        queue = Queue, debug = Debug })).
+                        mod = Mod, time = Timeout, timeout_state = Backoff,
+                        random_state = rand:seed_s(exrop, erlang:timestamp()), queue = Queue, debug = Debug })).
 
 %%%========================================================================
 %%% Gen-callback functions
@@ -412,11 +411,10 @@ init_it(Starter, Parent, Name0, Mod, Args, Options) ->
                                        time          = Timeout,
                                        timeout_state = undefined });
         {ok, State, Timeout, Backoff = {backoff, _, _, _}} ->
-            Backoff1 = extend_backoff(Backoff),
             proc_lib:init_ack(Starter, {ok, self()}),
             loop(GS2State #gs2_state { state         = State,
                                        time          = Timeout,
-                                       timeout_state = Backoff1 });
+                                       timeout_state = Backoff });
         {stop, Reason} ->
             %% For consistency, we must make sure that the
             %% registered name (if any) is unregistered before
@@ -457,11 +455,6 @@ unregister_name(Pid) when is_pid(Pid) ->
 %% On R13 it will never get here, as we get tuple with 'local/global' atom.
 unregister_name(_Name) -> ok.
 
-extend_backoff(undefined) ->
-    undefined;
-extend_backoff({backoff, InitialTimeout, MinimumTimeout, DesiredHibPeriod}) ->
-    {backoff, InitialTimeout, MinimumTimeout, DesiredHibPeriod, erlang:timestamp()}.
-
 %%%========================================================================
 %%% Internal functions
 %%%========================================================================
@@ -489,7 +482,7 @@ process_next_msg(GS2State = #gs2_state { time          = Time,
         {empty, Queue1} ->
             {Time1, HibOnTimeout}
                 = case {Time, TimeoutState} of
-                      {hibernate, {backoff, Current, _Min, _Desired, _RSt}} ->
+                      {hibernate, {backoff, Current, _Min, _Desired}} ->
                           {Current, true};
                       {hibernate, _} ->
                           %% wake_hib/7 will set Time to hibernate. If
@@ -519,20 +512,20 @@ process_next_msg(GS2State = #gs2_state { time          = Time,
             end
     end.
 
-wake_hib(GS2State = #gs2_state { timeout_state = TS }) ->
-    TimeoutState1 = case TS of
+wake_hib(GS2State = #gs2_state { timeout_state = TS, random_state = RandomState }) ->
+    {TimeoutState1, RandomState1} = case TS of
                         undefined ->
                             undefined;
                         {SleptAt, TimeoutState} ->
-                            adjust_timeout_state(SleptAt, erlang:timestampnow(), TimeoutState)
+                            adjust_timeout_state(SleptAt, erlang:timestampnow(), TimeoutState, RandomState)
                     end,
     post_hibernate(
-      drain(GS2State #gs2_state { timeout_state = TimeoutState1 })).
+      drain(GS2State #gs2_state { timeout_state = TimeoutState1, random_state = RandomState1 })).
 
 hibernate(GS2State = #gs2_state { timeout_state = TimeoutState }) ->
     TS = case TimeoutState of
              undefined             -> undefined;
-             {backoff, _, _, _, _} -> {eralng:timestamp(), TimeoutState}
+             {backoff, _, _, _} -> {eralng:timestamp(), TimeoutState}
          end,
     proc_lib:hibernate(?MODULE, wake_hib,
                        [GS2State #gs2_state { timeout_state = TS }]).
@@ -576,7 +569,7 @@ post_hibernate(GS2State = #gs2_state { state = State,
     end.
 
 adjust_timeout_state(SleptAt, AwokeAt, {backoff, CurrentTO, MinimumTO,
-                                        DesiredHibPeriod, RandomState}) ->
+                                        DesiredHibPeriod}, RandomState) ->
     NapLengthMicros = timer:now_diff(AwokeAt, SleptAt),
     CurrentMicros = CurrentTO * 1000,
     MinimumMicros = MinimumTO * 1000,
@@ -589,9 +582,9 @@ adjust_timeout_state(SleptAt, AwokeAt, {backoff, CurrentTO, MinimumTO,
             true -> lists:max([MinimumTO, CurrentTO div 2]);
             false -> CurrentTO
         end,
-    {Extra, RandomState1} = random:uniform_s(Base, RandomState),
+    {Extra, RandomState1} = rand:uniform_s(Base, RandomState),
     CurrentTO1 = Base + Extra,
-    {backoff, CurrentTO1, MinimumTO, DesiredHibPeriod, RandomState1}.
+    {{backoff, CurrentTO1, MinimumTO, DesiredHibPeriod}, RandomState1}.
 
 in({'$gen_cast', Msg}, GS2State = #gs2_state { prioritise_cast = PC,
                                                queue           = Queue }) ->
