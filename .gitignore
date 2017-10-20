@@ -17,3 +17,4 @@ ebin/libtest.erl
 ebin/libtest/collector.erl
 ebin/libtest/gen_server2.erl
 ebin/libtest/matchers.erl
+.rebar
