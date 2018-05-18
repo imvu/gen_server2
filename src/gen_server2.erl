@@ -515,9 +515,9 @@ process_next_msg(GS2State = #gs2_state { time          = Time,
 wake_hib(GS2State = #gs2_state { timeout_state = TS, random_state = RandomState }) ->
     {TimeoutState1, RandomState1} = case TS of
                         undefined ->
-                            undefined;
+                            {undefined, RandomState};
                         {SleptAt, TimeoutState} ->
-                            adjust_timeout_state(SleptAt, erlang:timestampnow(), TimeoutState, RandomState)
+                            adjust_timeout_state(SleptAt, erlang:timestamp(), TimeoutState, RandomState)
                     end,
     post_hibernate(
       drain(GS2State #gs2_state { timeout_state = TimeoutState1, random_state = RandomState1 })).
